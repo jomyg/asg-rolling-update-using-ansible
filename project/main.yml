@@ -1,0 +1,78 @@
+---
+- name: "Provisioning Aws Infrastructure Using Ansible"
+  hosts: localhost
+  tasks:
+    
+    - name: "Provision - Terraforn Init"
+      community.general.terraform:
+        project_path: "./infra/"
+        state: present
+        force_init: true
+      register: terraform
+    
+    - name: "Provision - Creating Dynamic Inventory"
+      add_host:
+        name: "{{ item }}"
+        groups: "asg_instances"
+        ansible_host: "{{ item }}"
+        ansible_port: 22
+        ansible_user: "ec2-user"
+        ansible_ssh_private_key_file: "./authentication/terraform"
+        ansible_ssh_common_args: "-o StrictHostKeyChecking=no"
+      with_items:
+        - "{{ terraform.outputs.instances.value}}"
+        
+- name: "Provisioning AutoScaling Group-Instances"
+  hosts: asg_instances
+  become: true
+  serial: 1
+  vars:
+    packages:
+       - httpd
+       - php
+       - git
+    git_repo: "https://github.com/jomyg/aws-elb-site.git"
+  tasks:
+     
+    - name: "Installing packages"
+      yum:
+        name: "{{ packages }}"
+        state: present
+    
+    - name: "Clonning Git Repository {{ git_repo }}"
+      git:
+        repo: "{{ git_repo }}"
+        dest: /var/github/
+      register: git_status
+     
+    
+    - name: "off-loading instance from loadbalancer"
+      when: git_status.changed == true
+      service:
+        name: httpd
+        state: stopped
+            
+    - name: "waiting For healthcheck Timeout"
+      when: git_status.changed == true
+      wait_for:
+        timeout: 30 
+    
+    - name: "copyinh contents to documentroot"
+      when: git_status.changed == true
+      copy:
+        src: "/var/github/"
+        dest: /var/www/html/
+        owner: "apache"
+        group: "apache"
+        remote_src: true
+            
+    - name: "loading instance to loadbalancer"
+      when: git_status.changed == true
+      service:
+        name: httpd
+        state: restarted
+            
+    - name: "waiting For healthcheck Timeout"
+      when: git_status.changed == true
+      wait_for:
+        timeout: 50
